@@ -2,8 +2,9 @@ from rdkit import Chem
 from rdkit.Chem import Mol, Atom, Bond
 import torch
 from torch import Tensor
-from torch_geometric.data import Data
+from torch_geometric.data import Data # type: ignore
 import pandas as pd
+from typing import Optional
 
 
 COMMON_ATOMS = ['H','C','N','O','F','P','S','Cl','Br','I']
@@ -86,7 +87,19 @@ def bond_features(bond: Bond) -> Tensor:
         int(bond.GetBondType() == Chem.rdchem.BondType.AROMATIC),
     ], dtype=torch.float)
 
-def mol_to_graph(smiles, inh_pow):
+def mol_to_graph(smiles: str, inh_pow: float) -> Optional[Data]:
+    """Creates a graph with the necessary embeddings from a given SMILES string.
+
+    Args:
+        smiles (str): The molecular structure given in SMILES format.
+        inh_pow (float): The inhibition power for the given molecule, this is the target
+            property.
+
+    Returns:
+        Data: A torch-geometric Data type which is a graph containing all the structural and
+            embedding information. If the SMILES string is unreadable or corrupt then None is
+            returned.
+    """
     mol: Mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
@@ -109,8 +122,10 @@ def mol_to_graph(smiles, inh_pow):
         bf = bond_features(bond)
         edge_attr.append(bf)
         edge_attr.append(bf)
-
+    
+    # Turns a list of tuples into a tensor and then changes the shape and memory type.
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+    # Combines a list of tensors into one big tensor of the required shape.
     edge_attr = torch.stack(edge_attr)
 
     y = torch.tensor([inh_pow], dtype=torch.float)
@@ -119,6 +134,16 @@ def mol_to_graph(smiles, inh_pow):
 
 
 def batch_from_csv(csv_path: str) -> list[Data]:
+    """
+    Takes a .csv file (database) and turns each row into a graph using the mol_to_graph
+    function.
+
+    Args:
+        csv_path (str): The path of the .csv file.
+
+    Returns:
+        list[Data]: A list of graphs that will then be put into the model for training.
+    """
     df = pd.read_csv(csv_path)
     graphs = []
     for _, row in df.iterrows():
