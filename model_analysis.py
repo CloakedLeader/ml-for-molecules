@@ -5,12 +5,12 @@ import torch
 from proc.smiles_to_graph import batch_from_csv
 from torch import nn
 from torch.nn import MSELoss, Linear, ReLU, Dropout, Sequential
-from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GCNConv, global_mean_pool
+from torch_geometric.loader import DataLoader # type: ignore
+from torch_geometric.nn import GCNConv, global_mean_pool # type: ignore
 from matplotlib import pyplot as plt
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error # type: ignore
 # import plotly.express as px
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr, spearmanr # type: ignore
 
 
 def plot_predictions(dataloader: DataLoader, model: nn.Module):
@@ -24,7 +24,11 @@ def plot_predictions(dataloader: DataLoader, model: nn.Module):
     model.eval()
     with torch.no_grad():
         for batch in dataloader:
-            preds = model(batch.x, batch.edge_index, batch.batch).squeeze()
+            if "edge_attr" in model.forward.__code__.co_varnames:
+                preds = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch).squeeze()
+            else:
+                preds = model(batch.x, batch.edge_index, batch.batch).squeeze()
+
             targets = batch.y.squeeze()
 
             # Handle possible shape mismatches

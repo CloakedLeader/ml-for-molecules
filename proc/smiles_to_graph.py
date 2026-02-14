@@ -81,11 +81,13 @@ def bond_features(bond: Bond) -> Tensor:
             the bond is single, double, triple or aromatic.
     """
     return torch.tensor([
-        int(bond.GetBondType() == Chem.rdchem.BondType.SINGLE),
-        int(bond.GetBondType() == Chem.rdchem.BondType.DOUBLE),
-        int(bond.GetBondType() == Chem.rdchem.BondType.TRIPLE),
-        int(bond.GetBondType() == Chem.rdchem.BondType.AROMATIC),
-    ], dtype=torch.float)
+        bond.GetBondType() == Chem.rdchem.BondType.SINGLE,
+        bond.GetBondType() == Chem.rdchem.BondType.DOUBLE,
+        bond.GetBondType() == Chem.rdchem.BondType.TRIPLE,
+        bond.GetBondType() == Chem.rdchem.BondType.AROMATIC,
+        bond.GetIsConjugated(),
+        bond.IsInRing(),
+        ], dtype=torch.float)
 
 def mol_to_graph(smiles: str, inh_pow: float) -> Optional[Data]:
     """Creates a graph with the necessary embeddings from a given SMILES string.

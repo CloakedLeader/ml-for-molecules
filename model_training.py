@@ -1,8 +1,10 @@
 import torch
 from torch import nn
-from torch.nn import MSELoss, Linear, ReLU, Dropout, Sequential
+from torch.nn import MSELoss, Linear, ReLU, Dropout, Sequential, L1Loss
 from torch_geometric.loader import DataLoader # type: ignore
-from torch_geometric.nn import GCNConv, global_mean_pool # type: ignore
+from torch_geometric.nn import GCNConv, global_mean_pool, MessagePassing # type: ignore
+from torch_geometric.utils import add_self_loops, degree # type: ignore
+import torch.nn.functional as F
 
 
 def train_gcn_model_batched(
@@ -27,14 +29,18 @@ def train_gcn_model_batched(
         nn.Module: Returns the model, having been trained.
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = MSELoss()
+    loss_fn = L1Loss()
+    # loss_fn = MSELoss()
 
     model.train()
     for epoch in range(epochs):
         total_loss = 0
         for batch in dataloader:
             optimizer.zero_grad()
-            out: torch.Tensor = model(batch.x, batch.edge_index, batch.batch).squeeze()
+            if 'edge_attr' in model.forward.__code__.co_varnames:
+                out = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch).squeeze()
+            else:
+                out = model(batch.x, batch.edge_index, batch.batch).squeeze()
             target = batch.y.squeeze()
 
             assert out.shape == target.shape, f"{out.shape=} vs {target.shape=}"
@@ -73,3 +79,67 @@ class GCNModel(torch.nn.Module):
         x = global_mean_pool(x, batch)
         out = self.ffnn(x)
         return out
+
+
+class MPNNLayer(MessagePassing):
+    def __init__(self, in_channels, edge_dim, hidden_dim):
+        super().__init__(aggr='add')
+        self.message_mlp = nn.Sequential(
+            nn.Linear(in_channels + edge_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+        self.update_mlp = nn.Sequential(
+            nn.Linear(in_channels + hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+
+    def forward(self, x, edge_index, edge_attr):
+        return self.propagate(edge_index, x=x, edge_attr=edge_attr)
+    
+    def message(self, x_j, edge_attr):
+        return self.message_mlp(torch.cat([x_j, edge_attr], dim=-1))
+    
+    def update(self, aggr_out, x):
+        return self.update_mlp(torch.cat([x, aggr_out], dim=-1))
+    
+
+class MPNNModel(nn.Module):
+    def __init__(self, in_channels, edge_dim, hidden_dim, num_layers=3, out_dim=1, dropout_rate=0.2):
+        super().__init__()
+
+        self.node_proj = nn.Linear(in_channels, hidden_dim)
+
+        self.layers = nn.ModuleList([
+            MPNNLayer(
+                in_channels=hidden_dim,
+                edge_dim=edge_dim,
+                hidden_dim=hidden_dim,
+            )
+            for _ in range(num_layers)
+        ])
+
+        self.dropout = nn.Dropout(dropout_rate)
+
+        self.ffnn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, out_dim),
+        )
+ 
+    def forward(self, x, edge_index, edge_attr, batch):
+        # Project node features to hidden_dim
+        x = self.node_proj(x)
+
+        for layer in self.layers:
+            x_res = x
+            x = layer(x, edge_index, edge_attr)
+            x = F.relu(x)
+            x = self.dropout(x)
+            x = x + x_res  # simple residual connection
+
+        # Graph-level pooling
+        x = global_mean_pool(x, batch)
+
+        return self.ffnn(x)
