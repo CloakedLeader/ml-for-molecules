@@ -124,6 +124,7 @@ class MoleculeRepresentation:
         self.molecule_3d = Chem.AddHs(self.molecule)
         
         params = rdDistGeom.ETKDGv3()
+        params.randomSeed = 111
         params.numThreads = 0
         params.pruneRmsThresh = 0.1
         conf_ids = rdDistGeom.EmbedMultipleConfs(self.molecule_3d, numConfs=50, params=params)
