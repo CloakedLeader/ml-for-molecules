@@ -15,7 +15,7 @@ class MoleculeDrawing:
         self.constructor = MoleculeRepresentation(smiles, inhib_pow)
 
     
-    def create_graph(self) -> nx.Graph:
+    def create_graph(self, name: str = "molecule.svg") -> nx.Graph:
         mol = self.constructor.molecule
         G = nx.Graph()
 
@@ -33,11 +33,13 @@ class MoleculeDrawing:
 
         plt.figure(figsize=(6, 6))
         nx.draw(G, pos, with_labels=True, labels=labels, node_size=800, font_size=12)
-        plt.savefig("molecule.svg")
+        plt.savefig(name)
 
 df = pd.read_csv(csv_path)
 df = df.sort_values("Inh Power", ascending=False)
-top_result = df.iloc[-1]
+for i in range(0, 10):
+    
+    drawer = MoleculeDrawing(df.iloc[-i]["SMILES"], df.iloc[-i]["Inh Power"])
+    drawer.create_graph(f"molecule_{10-i}.svg")
 
-drawer = MoleculeDrawing(top_result["SMILES"], top_result["Inh Power"])
-drawer.create_graph()
+
