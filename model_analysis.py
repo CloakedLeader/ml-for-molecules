@@ -13,7 +13,7 @@ from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error # 
 from scipy.stats import pearsonr, spearmanr # type: ignore
 
 
-def plot_predictions(dataloader: DataLoader, model: nn.Module):
+def plot_predictions(dataloader: DataLoader, model: nn.Module, model_type: str):
     """
     Function to plot predictions vs actual values.
     """
@@ -68,7 +68,7 @@ def plot_predictions(dataloader: DataLoader, model: nn.Module):
              [all_targets.min(), all_targets.max()], 'r--')
     plt.xlabel("Actual")
     plt.ylabel("Predicted")
-    plt.title("Predicted vs. Actual - GCN Model (Batched)")
+    plt.title(f"Predicted vs. Actual - {model_type} Model (Batched)")
     plt.grid(True)
     plt.tight_layout()
     plt.show()

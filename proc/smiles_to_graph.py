@@ -149,7 +149,10 @@ class MoleculeRepresentation:
 
         energies.sort(key=lambda x: x[1])
         best_conf = energies[0][0]
-        return self.molecule_3d.GetConformer(best_conf)
+        conf = Conformer(self.molecule_3d.GetConformer(best_conf))
+        self.molecule_3d.RemoveAllConformers()
+        self.molecule_3d.AddConformer(conf, assignId=True)
+        return conf
 
     def mol_to_graph(self) -> Optional[Data]:
         """Creates a graph with the necessary embeddings from a given SMILES string.

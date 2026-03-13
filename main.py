@@ -40,12 +40,10 @@ def set_seed(seed: int) -> None:
 set_seed(seed_)
 
 
-train_loader = DataLoader(graph_list, batch_size=32, shuffle=True)
+train_loader = DataLoader(graph_list, batch_size=16, shuffle=True)
 
 gcn_model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
 mpnn_model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
 
-print(mpnn_model)
-
 train_gcn_model_batched(train_loader, mpnn_model, lr=1e-3, epochs=300)
-plot_predictions(train_loader, mpnn_model)
+plot_predictions(train_loader, mpnn_model, "MPNN")
