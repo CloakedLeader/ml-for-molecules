@@ -50,7 +50,7 @@ def train_gcn_model_batched(
 
             total_loss += loss.item()
 
-        print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
+        # print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
     
     return model
 
@@ -97,10 +97,10 @@ class MPNNLayer(MessagePassing):
     def forward(self, x, edge_index, edge_attr):
         return self.propagate(edge_index, x=x, edge_attr=edge_attr)
     
-    def message(self, x_j, edge_attr):
+    def message(self, x_j, edge_attr):  # type: ignore
         return self.message_mlp(torch.cat([x_j, edge_attr], dim=-1))
     
-    def update(self, aggr_out, x):
+    def update(self, aggr_out, x):  # type: ignore
         return self.update_mlp(torch.cat([x, aggr_out], dim=-1))
     
 

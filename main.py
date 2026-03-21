@@ -11,10 +11,11 @@ from model_training import train_gcn_model_batched, GCNModel, MPNNModel
 
 seed_ = 786
 molecules_df = pd.read_csv("input.csv")
-graph_list = batch_from_csv("input.csv")
+graph_list = batch_from_csv(molecules_df)
+graphs = graph_list["graph"].to_list()
 
-num_node_features = graph_list[0].num_node_features
-num_edge_features = graph_list[0].num_edge_features
+num_node_features = graphs[0].num_node_features
+num_edge_features = graphs[0].num_edge_features
 
 # ys = np.array([data.y for data in graph_list])
 # variance = np.var(ys)  # Use ddof=1 for sample variance
@@ -40,7 +41,7 @@ def set_seed(seed: int) -> None:
 set_seed(seed_)
 
 
-train_loader = DataLoader(graph_list, batch_size=16, shuffle=True)
+train_loader = DataLoader(graphs, batch_size=16, shuffle=True)
 
 gcn_model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
 mpnn_model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)

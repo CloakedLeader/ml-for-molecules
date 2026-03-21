@@ -4,6 +4,7 @@ import torch
 from torch import Tensor
 from torch_geometric.data import Data # type: ignore
 import pandas as pd
+from pandas.core.frame import DataFrame
 from typing import Optional, Sequence
 import numpy as np
 
@@ -201,7 +202,7 @@ class MoleculeRepresentation:
         return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
 
 
-def batch_from_csv(csv_path: str) -> list[Data]:
+def batch_from_csv(dataframe: DataFrame) -> DataFrame:
     """
     Takes a .csv file (database) and turns each row into a graph using the mol_to_graph
     function.
@@ -212,12 +213,13 @@ def batch_from_csv(csv_path: str) -> list[Data]:
     Returns:
         list[Data]: A list of graphs that will then be put into the model for training.
     """
-    df = pd.read_csv(csv_path)
+
+    df = dataframe
     graphs = []
     for _, row in df.iterrows():
         g = MoleculeRepresentation(row["SMILES"], row["Inh Power"])
         graph = g.mol_to_graph()
-        if graph is not None:
-            graphs.append(graph)
-
-    return graphs
+        graphs.append(graph)
+    
+    df["graph"] = graphs
+    return df
