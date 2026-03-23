@@ -5,7 +5,7 @@ from torch_geometric.loader import DataLoader # type: ignore
 import torch
 from tqdm import tqdm # type: ignore
 
-from model_training import train_gcn_model_batched, MPNNModel
+from model_training import train_gcn_model_batched, MPNNModel, GCNModel
 
 
 df = pd.read_csv("input.csv")
@@ -32,7 +32,8 @@ for idx, row in tqdm(graph_list.iterrows(), total=len(graph_list)):
 
 
     loader =  DataLoader(x_train, batch_size=16, shuffle=True)
-    model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+    model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1, dropout_rate=0.2)
+    # model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
     train_gcn_model_batched(loader, model, lr=1e-3, epochs=300)
     model.eval()
     with torch.no_grad():
@@ -52,4 +53,4 @@ results_df = pd.DataFrame({
     "target": targets    
 })
 
-results_df.to_csv("loo_results.csv", index=False)
+results_df.to_csv("loo_results_gcn.csv", index=False)
