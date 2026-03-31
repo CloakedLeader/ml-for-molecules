@@ -8,6 +8,7 @@ from pandas.core.frame import DataFrame
 from typing import Optional, Sequence
 import numpy as np
 
+num_conf = 50 
 
 COMMON_ATOMS = ['H','C','N','O','F','P','S','Cl','Br','I']
 
@@ -128,8 +129,7 @@ class MoleculeRepresentation:
         params.randomSeed = 111
         params.numThreads = 0
         params.pruneRmsThresh = 0.1
-        conf_ids = rdDistGeom.EmbedMultipleConfs(self.molecule_3d, numConfs=50, params=params)
-
+        conf_ids = rdDistGeom.EmbedMultipleConfs(self.molecule_3d, numConfs=num_conf, params=params)
         if not rdForceFieldHelpers.MMFFHasAllMoleculeParams(self.molecule_3d):
             print("UFF does not support this molecule. Skipping minimization and using approximate geometry.")
             best_id = self.pick_central_conformer(self.molecule_3d, conf_ids)

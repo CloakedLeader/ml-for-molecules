@@ -133,7 +133,7 @@ df = df.sort_values("Inh Power", ascending=False)
 for index, j in enumerate([df.iloc[2], df.iloc[3]]):
 
     drawer = MoleculeDrawing(j["SMILES"], j["Inh Power"], j["Inhibitor Name"])
-    drawer.create_pdb_file(f"3d_molecule{index}.pdb")
+    drawer.create_pdb_file(f"2d_molecule{index}.pdb")
 
 
 
