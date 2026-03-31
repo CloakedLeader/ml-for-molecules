@@ -1,5 +1,6 @@
 from rdkit import Chem
 from rdkit.Chem import Mol, Atom, Bond, rdDistGeom, rdForceFieldHelpers, rdMolAlign, Conformer, rdPartialCharges
+from rdkit.Chem import AllChem
 import torch
 from torch import Tensor
 from torch_geometric.data import Data # type: ignore
@@ -7,6 +8,9 @@ import pandas as pd
 from pandas.core.frame import DataFrame
 from typing import Optional, Sequence
 import numpy as np
+import tempfile
+from pathlib import Path
+from crest_subproc import run_crest_search
 
 num_conf = 50 
 
@@ -129,30 +133,44 @@ class MoleculeRepresentation:
         params.randomSeed = 111
         params.numThreads = 0
         params.pruneRmsThresh = 0.1
-        conf_ids = rdDistGeom.EmbedMultipleConfs(self.molecule_3d, numConfs=num_conf, params=params)
-        if not rdForceFieldHelpers.MMFFHasAllMoleculeParams(self.molecule_3d):
-            print("UFF does not support this molecule. Skipping minimization and using approximate geometry.")
-            best_id = self.pick_central_conformer(self.molecule_3d, conf_ids)
-            return self.molecule_3d.GetConformer(best_id)
-        
-        mp = rdForceFieldHelpers.MMFFGetMoleculeProperties(self.molecule_3d)
-        energies = []
-        for cid in conf_ids:
-            ff = rdForceFieldHelpers.MMFFGetMoleculeForceField(
-                self.molecule_3d,
-                mp,
-                confId=cid
-            )
-            ff.Minimize()
-            energies.append((cid, ff.CalcEnergy()))
-        
+        rdDistGeom.EmbedMolecule(self.molecule_3d, params)
+        rdForceFieldHelpers.UFFOptimizeMolecule(self.molecule_3d)
 
+        tmp_dir = tempfile.mkdtemp()
+        xyz_path = Path(tmp_dir) / "input.xyz"
+        Chem.MolToXYZFile(self.molecule_3d, str(xyz_path))
 
-        energies.sort(key=lambda x: x[1])
-        best_conf = energies[0][0]
-        conf = Conformer(self.molecule_3d.GetConformer(best_conf))
+        coords = run_crest_search("input.xyz", Path(tmp_dir))
+        conf = Conformer(self.molecule_3d.GetNumAtoms())
+        for i, (x,y,z) in enumerate(coords):
+            conf.SetAtomPosition(i, (x,y,z))
+
         self.molecule_3d.RemoveAllConformers()
         self.molecule_3d.AddConformer(conf, assignId=True)
+        # conf_ids = rdDistGeom.EmbedMultipleConfs(self.molecule_3d, numConfs=num_conf, params=params)
+        # if not rdForceFieldHelpers.MMFFHasAllMoleculeParams(self.molecule_3d):
+        #     print("UFF does not support this molecule. Skipping minimization and using approximate geometry.")
+        #     best_id = self.pick_central_conformer(self.molecule_3d, conf_ids)
+        #     return self.molecule_3d.GetConformer(best_id)
+        
+        # mp = rdForceFieldHelpers.MMFFGetMoleculeProperties(self.molecule_3d)
+        # energies = []
+        # for cid in conf_ids:
+        #     ff = rdForceFieldHelpers.MMFFGetMoleculeForceField(
+        #         self.molecule_3d,
+        #         mp,
+        #         confId=cid
+        #     )
+        #     ff.Minimize()
+        #     energies.append((cid, ff.CalcEnergy()))
+        
+
+
+        # energies.sort(key=lambda x: x[1])
+        # best_conf = energies[0][0]
+        # conf = Conformer(self.molecule_3d.GetConformer(best_conf))
+        # self.molecule_3d.RemoveAllConformers()
+        # self.molecule_3d.AddConformer(conf, assignId=True)
         return conf
 
     def mol_to_graph(self) -> Optional[Data]:
