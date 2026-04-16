@@ -32,8 +32,8 @@ for idx, row in tqdm(graph_list.iterrows(), total=len(graph_list)):
 
 
     loader =  DataLoader(x_train, batch_size=16, shuffle=True)
-    model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1, dropout_rate=0.2)
-    # model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+    # model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1, dropout_rate=0.2)
+    model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
     train_gcn_model_batched(loader, model, lr=1e-3, epochs=300)
     model.eval()
     with torch.no_grad():
