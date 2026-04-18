@@ -2,7 +2,7 @@ from rdkit import Chem
 from rdkit.Chem import Mol, Atom, Bond, rdDistGeom, rdForceFieldHelpers, rdMolAlign, Conformer, rdPartialCharges, rdMolDescriptors, Descriptors, Crippen
 import torch
 from torch import Tensor
-from torch_geometric.data import Data # type: ignore
+from torch_geometric.data import Data
 import pandas as pd
 from pandas.core.frame import DataFrame
 from typing import Optional, Sequence
@@ -51,19 +51,19 @@ class MoleculeRepresentation:
         features.append(atom.GetAtomicNum() / 100.0)
 
         # Degree (1 dim)
-        features.append(atom.GetTotalDegree())
+        features.append(atom.GetTotalDegree() / 4.0)
 
         # Formal Charge (1 dim)
-        features.append(atom.GetFormalCharge())
+        features.append(atom.GetFormalCharge() / 5.0)
 
         # Hydridization (5 dim)
-        features += self.one_hot(atom.GetHybridization, HYBRIDIZATION_TYPES)
+        features += self.one_hot(atom.GetHybridization(), HYBRIDIZATION_TYPES)
 
         # Aromaticity (1 dim)
         features.append(int(atom.GetIsAromatic()))
 
         # Number of Hydrogens (1 dim)
-        features.append(atom.GetTotalNumHs())
+        features.append(atom.GetTotalNumHs() / 4.0)
 
         # In Ring (1 dim)
         features.append(int(atom.IsInRing()))
@@ -77,12 +77,12 @@ class MoleculeRepresentation:
         features.append(atom.GetMass() * 0.01)
 
         # Partial Charge (1 dim)
-        charge = float(atom.GetProp("_GasteigerCharge"))
-        features.append(charge)
+        # charge = float(atom.GetProp("_GasteigerCharge"))
+        # features.append(charge)
 
-        # Positions (3 dim)
-        pos = conf.GetAtomPosition(atom.GetIdx())
-        features += [pos.x, pos.y, pos.z]
+        # # Positions (3 dim)
+        # pos = conf.GetAtomPosition(atom.GetIdx())
+        # features += [pos.x, pos.y, pos.z]
 
         return torch.tensor(features, dtype=torch.float)
 
@@ -188,21 +188,13 @@ class MoleculeRepresentation:
         # Node features
         x = torch.stack([self.atom_features(atom, best_conf) for atom in self.molecule.GetAtoms()])
 
-        global_feat = self.global_features()
-        if global_feat.shape[0] < x.shape[1]:
-            global_feat = torch.nn.functional.pad(
-                global_feat,
-                (0, x.shape[1] - global_feat.shape[0])
-            )
-
-        x = torch.cat([x, global_feat.unsqueeze(0)], dim=0)
-
+    
+    
             
         # Edges
         edge_ind:list = []
         edge_att:list = []
 
-        global_idx = x.shape[0]-1
         def add_edge(i, j, attr):
             edge_ind.append([i,j])
             edge_att.append(attr)
@@ -212,15 +204,16 @@ class MoleculeRepresentation:
             j = bond.GetEndAtomIdx()
 
             bf = self.bond_features(bond)
+            if torch.isnan(bf).any():
+                print("NaNs in bond features!")
+                print("SMILES:", self.smiles)
+                return None
+
             # Undirected graph → add both directions
             add_edge(i, j, bf)
             add_edge(j, i, bf)
 
-        global_edge_attr = torch.zeros(edge_att[0].shape)
-
-        for i in range(global_idx):
-            add_edge(i, global_idx, global_edge_attr)
-            add_edge(global_idx, i, global_edge_attr)
+        
 
         # Turns a list of tuples into a tensor and then changes the shape and memory type.
         edge_index = torch.tensor(edge_ind, dtype=torch.long).t().contiguous()
