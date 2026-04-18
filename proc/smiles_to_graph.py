@@ -21,16 +21,17 @@ HYBRIDIZATION_TYPES = [
 ]
 
 class MoleculeRepresentation:
-    def __init__(self, smiles: str, inh_pow: float):
+    def __init__(self, smiles: str, inh_pow: float, struct_3d: bool):
         self.smiles = smiles
         self.molecule = Chem.MolFromSmiles(smiles)
         self.inh_pow = inh_pow
+        self.three_d = struct_3d
 
     @staticmethod
     def one_hot(value, choices):
         return [int(value == c) for c in choices]
     
-    def atom_features(self, atom: Atom, conf: Conformer) -> Tensor:
+    def atom_features(self, atom: Atom) -> Tensor:
         """Creates a pytorch tensor that is the node-features for a specific atom.
 
         Args:
@@ -85,8 +86,17 @@ class MoleculeRepresentation:
         # features += [pos.x, pos.y, pos.z]
 
         return torch.tensor(features, dtype=torch.float)
-
-    def bond_features(self, bond: Bond) -> Tensor:
+    @staticmethod
+    def compute_atom_distances(bond: Bond, conform: Conformer) -> float:
+        beg = bond.GetBeginAtomIdx()
+        end = bond.GetEndAtomIdx()
+        beg_pos = conform.GetAtomPosition(beg)
+        beg_pos = np.array([beg_pos.x, beg_pos.y, beg_pos.z])
+        end_pos = conform.GetAtomPosition(end)
+        end_pos = np.array([end_pos.x, end_pos.y, end_pos.z])
+        return float(np.linalg.norm(beg_pos - end_pos))
+    
+    def bond_features(self, bond: Bond, conform: Conformer | None = None, mean = None, std = None) -> Tensor:
         """Creates a pytorch tensor that is the edge features for a specific bond.
 
         Args:
@@ -96,7 +106,24 @@ class MoleculeRepresentation:
             Tensor: Has dimension 4 and is a one-hot encoding which tells the model whether
                 the bond is single, double, triple or aromatic.
         """
-        return torch.tensor([
+        if conform:
+            dist = self.compute_atom_distances(bond, conform)
+        if self.three_d:
+            if mean and std:
+            
+                return torch.tensor([
+                    bond.GetBondType() == Chem.rdchem.BondType.SINGLE,
+                    bond.GetBondType() == Chem.rdchem.BondType.DOUBLE,
+                    bond.GetBondType() == Chem.rdchem.BondType.TRIPLE,
+                    bond.GetBondType() == Chem.rdchem.BondType.AROMATIC,
+                    bond.GetIsConjugated(),
+                    bond.IsInRing(),
+                    (dist - mean) / std,
+                    ], dtype=torch.float)
+            else:
+                raise ValueError("Need to add mean and standard deviation to normalise distances!")
+        else:
+            return torch.tensor([
             bond.GetBondType() == Chem.rdchem.BondType.SINGLE,
             bond.GetBondType() == Chem.rdchem.BondType.DOUBLE,
             bond.GetBondType() == Chem.rdchem.BondType.TRIPLE,
@@ -155,19 +182,7 @@ class MoleculeRepresentation:
         self.molecule_3d.AddConformer(conf, assignId=True)
         return conf
 
-    def global_features(self):
-        mol = self.molecule
-        
-        return torch.tensor([
-            # Descriptors.HeavyMolWt(mol),
-            # Crippen.MolLogP(mol),
-            rdMolDescriptors.CalcTPSA(mol),
-            rdMolDescriptors.CalcNumHeteroatoms(mol),
-            rdMolDescriptors.CalcNumAromaticRings(mol),
-            rdMolDescriptors.CalcNumRotatableBonds(mol),
-        ], dtype=torch.float)
-
-    def mol_to_graph(self) -> Optional[Data]:
+    def mol_to_2d_graph(self) -> Optional[Data]:
         """Creates a graph with the necessary embeddings from a given SMILES string.
 
         Args:
@@ -182,14 +197,13 @@ class MoleculeRepresentation:
         """
         if self.molecule is None:
             return None
-        
-        best_conf = self.find_best_conformer()
+        # if self.molecule_3d.GetNumConformers() != 1:
+        #     best_conf = self.find_best_conformer()
+        # else:
+        #     best_conf = self.molecule_3d.GetConformer()
 
         # Node features
-        x = torch.stack([self.atom_features(atom, best_conf) for atom in self.molecule.GetAtoms()])
-
-    
-    
+        x = torch.stack([self.atom_features(atom) for atom in self.molecule.GetAtoms()])
             
         # Edges
         edge_ind:list = []
@@ -204,16 +218,49 @@ class MoleculeRepresentation:
             j = bond.GetEndAtomIdx()
 
             bf = self.bond_features(bond)
-            if torch.isnan(bf).any():
-                print("NaNs in bond features!")
-                print("SMILES:", self.smiles)
-                return None
 
             # Undirected graph → add both directions
             add_edge(i, j, bf)
             add_edge(j, i, bf)
 
-        
+        # Turns a list of tuples into a tensor and then changes the shape and memory type.
+        edge_index = torch.tensor(edge_ind, dtype=torch.long).t().contiguous()
+        # Combines a list of tensors into one big tensor of the required shape.
+        edge_attr = torch.stack(edge_att)
+
+        y = torch.tensor([self.inh_pow], dtype=torch.float)
+
+        return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
+    
+
+    def mol_to_3d_graph(self, mean, std):
+        if self.molecule is None:
+            return None
+        if self.molecule_3d.GetNumConformers() != 1:
+            best_conf = self.find_best_conformer()
+        else:
+            best_conf = self.molecule_3d.GetConformer()
+
+        # Node features
+        x = torch.stack([self.atom_features(atom) for atom in self.molecule.GetAtoms()])
+            
+        # Edges
+        edge_ind:list = []
+        edge_att:list = []
+
+        def add_edge(i, j, attr):
+            edge_ind.append([i,j])
+            edge_att.append(attr)
+
+        for bond in self.molecule.GetBonds():
+            i = bond.GetBeginAtomIdx()
+            j = bond.GetEndAtomIdx()
+
+            bf = self.bond_features(bond, conform=best_conf, mean=mean, std=std)
+
+            # Undirected graph → add both directions
+            add_edge(i, j, bf)
+            add_edge(j, i, bf)
 
         # Turns a list of tuples into a tensor and then changes the shape and memory type.
         edge_index = torch.tensor(edge_ind, dtype=torch.long).t().contiguous()
@@ -225,7 +272,7 @@ class MoleculeRepresentation:
         return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
 
 
-def batch_from_csv(dataframe: DataFrame) -> DataFrame:
+def batch_from_csv(dataframe: DataFrame, struct_3d: bool) -> DataFrame:
     """
     Takes a .csv file (database) and turns each row into a graph using the mol_to_graph
     function.
@@ -239,10 +286,40 @@ def batch_from_csv(dataframe: DataFrame) -> DataFrame:
 
     df = dataframe
     graphs = []
-    for _, row in df.iterrows():
-        g = MoleculeRepresentation(row["SMILES"], row["Inh Power"])
-        graph = g.mol_to_graph()
-        graphs.append(graph)
-    
+    if struct_3d == False:
+        for _, row in df.iterrows():
+            g = MoleculeRepresentation(row["SMILES"], row["Inh Power"], struct_3d)
+            graph = g.mol_to_2d_graph()
+            graphs.append(graph)
+
+    else:
+
+        distances = []
+        molecules = [MoleculeRepresentation(row["SMILES"], row["Inh Power"], struct_3d) for _, row in df.iterrows()]
+        confs = [m.find_best_conformer() for m in molecules]
+        combined = zip(molecules, confs)
+        for i in combined:
+            mole = i[0]
+            conf = i[1]
+            for bond in mole.molecule.GetBonds():
+                distances.append(compute_atom_distances(bond, conf))
+
+        mean_dist = np.array(distances).mean()
+        std_dist = np.array(distances).std()
+
+        for i in molecules:
+            graph = i.mol_to_3d_graph(mean_dist, std_dist)
+            graphs.append(graph)
+
     df["graph"] = graphs
     return df
+
+
+def compute_atom_distances(bond: Bond, conform: Conformer) -> float:
+        beg = bond.GetBeginAtomIdx()
+        end = bond.GetEndAtomIdx()
+        beg_pos = conform.GetAtomPosition(beg)
+        beg_pos = np.array([beg_pos.x, beg_pos.y, beg_pos.z])
+        end_pos = conform.GetAtomPosition(end)
+        end_pos = np.array([end_pos.x, end_pos.y, end_pos.z])
+        return float(np.linalg.norm(beg_pos - end_pos))

@@ -12,7 +12,7 @@ def train_gcn_model_batched(
         model: nn.Module,
         lr: float = 1e-3,
         epochs: int = 300
-) -> nn.Module:
+) -> tuple[nn.Module, list]:
     """
     Trains a given model for a regression task over a given number of epochs, tracks
     the loss for each epoch and adjusts its optimisation after each batch.
@@ -32,6 +32,8 @@ def train_gcn_model_batched(
     loss_fn = L1Loss()
     # loss_fn = MSELoss()
 
+    losses = []
+
     model.train()
     for epoch in range(epochs):
         total_loss = 0
@@ -47,12 +49,12 @@ def train_gcn_model_batched(
             loss = loss_fn(out, target)
             loss.backward()
             optimizer.step()
-
+            losses.append((epoch, loss.item()))
             total_loss += loss.item()
 
         # print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
     
-    return model
+    return model, losses
 
 
 class GCNModel(torch.nn.Module):

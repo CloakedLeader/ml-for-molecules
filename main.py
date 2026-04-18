@@ -4,18 +4,19 @@ import random
 import torch
 from proc.smiles_to_graph import batch_from_csv
 from torch_geometric.loader import DataLoader # type: ignore
+from matplotlib import pyplot as plt
 
 from model_analysis import plot_predictions
 from model_training import train_gcn_model_batched, GCNModel, MPNNModel
 
 
 seed_ = 786
-molecules_df = pd.read_csv("input.csv")
-graph_list = batch_from_csv(molecules_df)
-graphs = graph_list["graph"].to_list()
+# molecules_df = pd.read_csv("input.csv")
+# graph_list = batch_from_csv(molecules_df)
+# graphs = graph_list["graph"].to_list()
 
-num_node_features = graphs[0].num_node_features
-num_edge_features = graphs[0].num_edge_features
+# num_node_features = graphs[0].num_node_features
+# num_edge_features = graphs[0].num_edge_features
 
 # ys = np.array([data.y for data in graph_list])
 # variance = np.var(ys)  # Use ddof=1 for sample variance
@@ -41,10 +42,28 @@ def set_seed(seed: int) -> None:
 set_seed(seed_)
 
 
-train_loader = DataLoader(graphs, batch_size=1, shuffle=True)
+def run_3d_model(typ: str):
+    molecules_df = pd.read_csv("input.csv")
+    graphs_df = batch_from_csv(molecules_df, True)
+    graphs = graphs_df["graph"].to_list()
 
-gcn_model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
-mpnn_model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+    num_node_features = graphs[0].num_node_features
+    num_edge_features = graphs[0].num_edge_features
 
-train_gcn_model_batched(train_loader, mpnn_model, lr=1e-3, epochs=300)
-plot_predictions(train_loader, mpnn_model, "MPNN")
+    train_loader = DataLoader(graphs, batch_size=4, shuffle=True)
+
+    if typ == "GCN":
+        gcn_model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
+        model, losses = train_gcn_model_batched(train_loader, gcn_model, lr=1e-3, epochs=300)
+        plot_predictions(train_loader, gcn_model, "GCN")
+    
+    else:
+        mpnn_model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+        model, losses = train_gcn_model_batched(train_loader, mpnn_model, lr=1e-3, epochs=300)
+        plot_predictions(train_loader, mpnn_model, "MPNN")
+
+    plt.plot(losses[0], losses[1])
+    plt.show()
+
+
+run_3d_model("")
