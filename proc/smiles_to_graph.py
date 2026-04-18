@@ -1,8 +1,8 @@
 from rdkit import Chem
-from rdkit.Chem import Mol, Atom, Bond, rdDistGeom, rdForceFieldHelpers, rdMolAlign, Conformer, rdPartialCharges
+from rdkit.Chem import Mol, Atom, Bond, rdDistGeom, rdForceFieldHelpers, rdMolAlign, Conformer, rdPartialCharges, rdMolDescriptors, Descriptors, Crippen
 import torch
 from torch import Tensor
-from torch_geometric.data import Data # type: ignore
+from torch_geometric.data import Data
 import pandas as pd
 from pandas.core.frame import DataFrame
 from typing import Optional, Sequence
@@ -51,19 +51,19 @@ class MoleculeRepresentation:
         features.append(atom.GetAtomicNum() / 100.0)
 
         # Degree (1 dim)
-        features.append(atom.GetTotalDegree())
+        features.append(atom.GetTotalDegree() / 4.0)
 
         # Formal Charge (1 dim)
-        features.append(atom.GetFormalCharge())
+        features.append(atom.GetFormalCharge() / 5.0)
 
         # Hydridization (5 dim)
-        features += self.one_hot(atom.GetHybridization, HYBRIDIZATION_TYPES)
+        features += self.one_hot(atom.GetHybridization(), HYBRIDIZATION_TYPES)
 
         # Aromaticity (1 dim)
         features.append(int(atom.GetIsAromatic()))
 
         # Number of Hydrogens (1 dim)
-        features.append(atom.GetTotalNumHs())
+        features.append(atom.GetTotalNumHs() / 4.0)
 
         # In Ring (1 dim)
         features.append(int(atom.IsInRing()))
@@ -77,12 +77,12 @@ class MoleculeRepresentation:
         features.append(atom.GetMass() * 0.01)
 
         # Partial Charge (1 dim)
-        charge = float(atom.GetProp("_GasteigerCharge"))
-        features.append(charge)
+        # charge = float(atom.GetProp("_GasteigerCharge"))
+        # features.append(charge)
 
-        # Positions (3 dim)
-        pos = conf.GetAtomPosition(atom.GetIdx())
-        features += [pos.x, pos.y, pos.z]
+        # # Positions (3 dim)
+        # pos = conf.GetAtomPosition(atom.GetIdx())
+        # features += [pos.x, pos.y, pos.z]
 
         return torch.tensor(features, dtype=torch.float)
 
@@ -155,6 +155,18 @@ class MoleculeRepresentation:
         self.molecule_3d.AddConformer(conf, assignId=True)
         return conf
 
+    def global_features(self):
+        mol = self.molecule
+        
+        return torch.tensor([
+            # Descriptors.HeavyMolWt(mol),
+            # Crippen.MolLogP(mol),
+            rdMolDescriptors.CalcTPSA(mol),
+            rdMolDescriptors.CalcNumHeteroatoms(mol),
+            rdMolDescriptors.CalcNumAromaticRings(mol),
+            rdMolDescriptors.CalcNumRotatableBonds(mol),
+        ], dtype=torch.float)
+
     def mol_to_graph(self) -> Optional[Data]:
         """Creates a graph with the necessary embeddings from a given SMILES string.
 
@@ -176,26 +188,37 @@ class MoleculeRepresentation:
         # Node features
         x = torch.stack([self.atom_features(atom, best_conf) for atom in self.molecule.GetAtoms()])
 
+    
+    
+            
         # Edges
-        edge_index = []
-        edge_attr = []
+        edge_ind:list = []
+        edge_att:list = []
+
+        def add_edge(i, j, attr):
+            edge_ind.append([i,j])
+            edge_att.append(attr)
 
         for bond in self.molecule.GetBonds():
             i = bond.GetBeginAtomIdx()
             j = bond.GetEndAtomIdx()
 
-            # Undirected graph → add both directions
-            edge_index.append([i, j])
-            edge_index.append([j, i])
-
             bf = self.bond_features(bond)
-            edge_attr.append(bf)
-            edge_attr.append(bf)
+            if torch.isnan(bf).any():
+                print("NaNs in bond features!")
+                print("SMILES:", self.smiles)
+                return None
+
+            # Undirected graph → add both directions
+            add_edge(i, j, bf)
+            add_edge(j, i, bf)
+
         
+
         # Turns a list of tuples into a tensor and then changes the shape and memory type.
-        edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+        edge_index = torch.tensor(edge_ind, dtype=torch.long).t().contiguous()
         # Combines a list of tensors into one big tensor of the required shape.
-        edge_attr = torch.stack(edge_attr)
+        edge_attr = torch.stack(edge_att)
 
         y = torch.tensor([self.inh_pow], dtype=torch.float)
 
