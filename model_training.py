@@ -7,7 +7,7 @@ from torch_geometric.utils import add_self_loops, degree # type: ignore
 import torch.nn.functional as F
 
 
-def train_gcn_model_batched(
+def train_model_batched(
         dataloader: DataLoader,
         model: nn.Module,
         lr: float = 1e-3,
@@ -37,6 +37,7 @@ def train_gcn_model_batched(
     model.train()
     for epoch in range(epochs):
         total_loss = 0
+        num_batches = 0
         for batch in dataloader:
             optimizer.zero_grad()
             if 'edge_attr' in model.forward.__code__.co_varnames:
@@ -49,13 +50,71 @@ def train_gcn_model_batched(
             loss = loss_fn(out, target)
             loss.backward()
             optimizer.step()
-            losses.append((epoch, loss.item()))
             total_loss += loss.item()
+            num_batches += 1
 
         # print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
+        avg_loss = total_loss / num_batches
+        losses.append(float(avg_loss))
     
     return model, losses
 
+def train_model_batched_w_valid(
+        train_dataloader: DataLoader,
+        valid_dataloader: DataLoader,
+        model: nn.Module,
+        lr: float = 1e-3,
+        epochs: int = 300
+) -> tuple[nn.Module, list, list]:
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn = L1Loss()
+    # loss_fn = MSELoss()
+
+    train_losses = []
+    val_losses = []
+
+    
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0
+        num_batches = 0
+        for batch in train_dataloader:
+            optimizer.zero_grad()
+            if 'edge_attr' in model.forward.__code__.co_varnames:
+                out = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch).squeeze()
+            else:
+                out = model(batch.x, batch.edge_index, batch.batch).squeeze()
+            target = batch.y.squeeze()
+
+            assert out.shape == target.shape, f"{out.shape=} vs {target.shape=}"
+            loss = loss_fn(out, target)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            num_batches += 1
+
+        avg_loss = total_loss / num_batches
+        train_losses.append(float(total_loss / num_batches))
+
+        model.eval()
+        val_loss = 0
+        val_batches = 0
+        with torch.no_grad():
+            for batch in valid_dataloader:
+                if 'edge_attr' in model.forward.__code__.co_varnames:
+                    out = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch).squeeze()
+                else:
+                    out = model(batch.x, batch.edge_index, batch.batch).squeeze()
+                target = batch.y.squeeze()
+                loss = loss_fn(out, target)
+
+                val_loss += loss.item()
+                val_batches += 1
+
+        val_losses.append(float(val_loss / val_batches))
+    
+    return model, train_losses, val_losses
 
 class GCNModel(torch.nn.Module):
     def __init__(self, in_channels, hidden_dim, out_dim=1, dropout_rate=0.2):

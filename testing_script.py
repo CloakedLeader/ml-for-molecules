@@ -5,11 +5,11 @@ from torch_geometric.loader import DataLoader # type: ignore
 import torch
 from tqdm import tqdm # type: ignore
 
-from model_training import train_gcn_model_batched, MPNNModel, GCNModel
+from model_training import train_model_batched, MPNNModel, GCNModel
 
 
 df = pd.read_csv("input.csv")
-graph_list = batch_from_csv(df)
+graph_list = batch_from_csv(df, False)
 
 graphs = graph_list["graph"].tolist()
 num_node_features = graphs[0].num_node_features
@@ -32,9 +32,9 @@ for idx, row in tqdm(graph_list.iterrows(), total=len(graph_list)):
 
 
     loader =  DataLoader(x_train, batch_size=16, shuffle=True)
-    # model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1, dropout_rate=0.2)
-    model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
-    train_gcn_model_batched(loader, model, lr=1e-3, epochs=300)
+    model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1, dropout_rate=0.2)
+    # model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+    train_model_batched(loader, model, lr=1e-3, epochs=300)
     model.eval()
     with torch.no_grad():
         batch_vec = torch.zeros(x_test.x.size(0), dtype=torch.long)

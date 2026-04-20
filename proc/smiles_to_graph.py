@@ -21,11 +21,12 @@ HYBRIDIZATION_TYPES = [
 ]
 
 class MoleculeRepresentation:
-    def __init__(self, smiles: str, inh_pow: float, struct_3d: bool):
+    def __init__(self, smiles: str, inh_pow: float, struct_3d: bool, seed: int | None = None):
         self.smiles = smiles
         self.molecule = Chem.MolFromSmiles(smiles)
         self.inh_pow = inh_pow
         self.three_d = struct_3d
+        self.seed = seed
 
     @staticmethod
     def one_hot(value, choices):
@@ -116,8 +117,8 @@ class MoleculeRepresentation:
                     bond.GetBondType() == Chem.rdchem.BondType.DOUBLE,
                     bond.GetBondType() == Chem.rdchem.BondType.TRIPLE,
                     bond.GetBondType() == Chem.rdchem.BondType.AROMATIC,
-                    bond.GetIsConjugated(),
-                    bond.IsInRing(),
+                    int(bond.GetIsConjugated()),
+                    int(bond.IsInRing()),
                     (dist - mean) / std,
                     ], dtype=torch.float)
             else:
@@ -128,8 +129,8 @@ class MoleculeRepresentation:
             bond.GetBondType() == Chem.rdchem.BondType.DOUBLE,
             bond.GetBondType() == Chem.rdchem.BondType.TRIPLE,
             bond.GetBondType() == Chem.rdchem.BondType.AROMATIC,
-            bond.GetIsConjugated(),
-            bond.IsInRing(),
+            int(bond.GetIsConjugated()),
+            int(bond.IsInRing()),
             ], dtype=torch.float)
     
     @staticmethod
@@ -147,19 +148,22 @@ class MoleculeRepresentation:
         return conf_ids[int(np.argmin(mean_rmsd))]
     
     
-    def find_best_conformer(self) -> Optional[Conformer]:
-        if self.molecule is None:
-            return None
+    def find_best_conformer(self) -> Conformer:
+        # if self.molecule is None:
+        #     return None
         self.molecule_3d = Chem.AddHs(self.molecule)
         
         params = rdDistGeom.ETKDGv3()
-        params.randomSeed = 111
+        params.randomSeed = self.seed or 111
         params.numThreads = 0
         params.pruneRmsThresh = 0.1
         conf_ids = rdDistGeom.EmbedMultipleConfs(self.molecule_3d, numConfs=num_conf, params=params)
         if not rdForceFieldHelpers.MMFFHasAllMoleculeParams(self.molecule_3d):
             print("UFF does not support this molecule. Skipping minimization and using approximate geometry.")
             best_id = self.pick_central_conformer(self.molecule_3d, conf_ids)
+            # conf = self.molecule_3d.GetConformer(best_id)
+            # self.molecule_3d.RemoveAllConformers()
+            # self.molecule_3d.AddConformer(conf, assignId=True)
             return self.molecule_3d.GetConformer(best_id)
         
         mp = rdForceFieldHelpers.MMFFGetMoleculeProperties(self.molecule_3d)
@@ -174,12 +178,11 @@ class MoleculeRepresentation:
             energies.append((cid, ff.CalcEnergy()))
         
 
-
         energies.sort(key=lambda x: x[1])
         best_conf = energies[0][0]
         conf = Conformer(self.molecule_3d.GetConformer(best_conf))
-        self.molecule_3d.RemoveAllConformers()
-        self.molecule_3d.AddConformer(conf, assignId=True)
+        # self.molecule_3d.RemoveAllConformers()
+        # self.molecule_3d.AddConformer(conf, assignId=True)
         return conf
 
     def mol_to_2d_graph(self) -> Optional[Data]:
@@ -233,13 +236,13 @@ class MoleculeRepresentation:
         return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
     
 
-    def mol_to_3d_graph(self, mean, std):
+    def mol_to_3d_graph(self, mean, std, conf: Conformer):
         if self.molecule is None:
             return None
-        if self.molecule_3d.GetNumConformers() != 1:
-            best_conf = self.find_best_conformer()
+        if conf:
+            best_conf = conf
         else:
-            best_conf = self.molecule_3d.GetConformer()
+            best_conf = self.find_best_conformer()
 
         # Node features
         x = torch.stack([self.atom_features(atom) for atom in self.molecule.GetAtoms()])
@@ -293,22 +296,32 @@ def batch_from_csv(dataframe: DataFrame, struct_3d: bool) -> DataFrame:
             graphs.append(graph)
 
     else:
+        count = 0
+        mean = 0
+        M2 = 0
+        for _, row in df.iterrows():
+            mole = MoleculeRepresentation(row["SMILES"], row["Inh Power"], struct_3d)
+            conf = mole.find_best_conformer()
 
-        distances = []
-        molecules = [MoleculeRepresentation(row["SMILES"], row["Inh Power"], struct_3d) for _, row in df.iterrows()]
-        confs = [m.find_best_conformer() for m in molecules]
-        combined = zip(molecules, confs)
-        for i in combined:
-            mole = i[0]
-            conf = i[1]
             for bond in mole.molecule.GetBonds():
-                distances.append(compute_atom_distances(bond, conf))
+                i = bond.GetBeginAtomIdx()
+                j = bond.GetEndAtomIdx()
+                pos_i = conf.GetAtomPosition(i)
+                pos_j = conf.GetAtomPosition(j)
 
-        mean_dist = np.array(distances).mean()
-        std_dist = np.array(distances).std()
+                dist = pos_i.Distance(pos_j)
+                count += 1
+                delta = dist - mean
+                mean += delta / count
+                delta2 = dist - mean
+                M2 += delta * delta2
+        
+        std = (M2 / count) ** 0.5
+        for _, row in df.iterrows():
+            mole = MoleculeRepresentation(row["SMILES"], row["Inh Power"], struct_3d)
+            conf = mole.find_best_conformer()
 
-        for i in molecules:
-            graph = i.mol_to_3d_graph(mean_dist, std_dist)
+            graph = mole.mol_to_3d_graph(mean, std, conf)
             graphs.append(graph)
 
     df["graph"] = graphs

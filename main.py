@@ -1,28 +1,19 @@
 import pandas as pd
 import numpy as np
-import random
+from numpy import random as rd
 import torch
+import random
 from proc.smiles_to_graph import batch_from_csv
 from torch_geometric.loader import DataLoader # type: ignore
+from torch_geometric.data import Data
 from matplotlib import pyplot as plt
+from sklearn.metrics import r2_score, root_mean_squared_error
 
 from model_analysis import plot_predictions
-from model_training import train_gcn_model_batched, GCNModel, MPNNModel
+from model_training import train_model_batched, train_model_batched_w_valid, GCNModel, MPNNModel
 
 
 seed_ = 786
-# molecules_df = pd.read_csv("input.csv")
-# graph_list = batch_from_csv(molecules_df)
-# graphs = graph_list["graph"].to_list()
-
-# num_node_features = graphs[0].num_node_features
-# num_edge_features = graphs[0].num_edge_features
-
-# ys = np.array([data.y for data in graph_list])
-# variance = np.var(ys)  # Use ddof=1 for sample variance
-# print("Variance:", variance)
-# ?  This dataset has a Variance = 32.06531
-
 
 def set_seed(seed: int) -> None:
     """
@@ -34,12 +25,103 @@ def set_seed(seed: int) -> None:
     """
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
+    rd.seed(seed)
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-set_seed(seed_)
+# set_seed(seed_)
+
+def create_k_folds(k: int, graphs: list[Data]) -> list[list[Data]]:
+    random.shuffle(graphs)
+    fold_size = len(graphs) // k
+    folds = []
+    for i in range(k):
+        start = i * fold_size
+        end = (i + 1) * fold_size if i != k-1 else len(graphs)
+        folds.append(graphs[start:end])
+    # folds = [graphs[i: i+ k] for i in range(0, len(graphs), k)]
+    # folds = [DataLoader(fold, batch_size=2, shuffle=True) for fold in folds]
+    return folds
+
+def average_k_folds(k: int, times: int, struc) -> float:
+    seeds = [int(random.uniform(0,1)*100) for i in range(times)]
+    avgs = []
+    for i in seeds:
+        set_seed(i)
+        avg = run_k_fold("MPNN", 5, struc)
+        avgs.append(avg)
+    
+    return np.array(avgs).mean()
+
+def run_k_fold(typ: str, k: int, struct_3d: bool) -> float:
+    molecules_df = pd.read_csv("input.csv")
+    if struct_3d == False:
+        graphs_df = batch_from_csv(molecules_df, False)
+    else:
+        graphs_df = batch_from_csv(molecules_df, True)
+    graphs = graphs_df["graph"].to_list()
+    num_node_features = graphs[0].num_node_features
+    num_edge_features = graphs[0].num_edge_features
+
+    folds = create_k_folds(k, graphs)
+    losses = {}
+
+    all_val_losses =[]
+    all_train_losses = []
+    for i in range(k):
+        val_graphs = folds[i]
+        train_graphs = [g for j in range(k) if j!= i for g in folds[j]]
+
+        train_loader = DataLoader(train_graphs, batch_size=4, shuffle=True)
+        val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
+        if typ == "GCN":
+            model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
+        else:
+            model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+        model, losses_train, losses_val = train_model_batched_w_valid(
+            train_loader,
+            val_loader,
+            model
+        )
+        losses[f"run_{i+1}"] = (losses_train, losses_val)
+        val_error = sum(losses_val[-10:]) / 10
+        all_val_losses.append(val_error)
+    
+    val = np.array([losses[f"run_{i+1}"][1] for i in range(k)])
+    mean_val = val.mean(axis=0)
+    std_val = val.std(axis=0)
+    epochs = range(len(mean_val))
+    plt.figure(figsize=(8,5))
+    plt.plot(epochs, mean_val, label="Mean Validation Loss")
+    plt.fill_between(
+        epochs,
+        mean_val - std_val,
+        mean_val + std_val,
+        alpha=0.3
+    )
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("5-Fold Cross Validation: Validation Loss (Mean ± Std)")
+    plt.legend()
+    plt.show()
+
+    fig, axes = plt.subplots(k, 1, figsize=(8,12), sharex=True)
+    for i in range(k):
+        axes[i].plot(losses[f"run_{i+1}"][0], label="Train Loss")
+        axes[i].plot(losses[f"run_{i+1}"][1], label="Val Loss")
+        axes[i].set_title(f"Fold {i+1}")
+        axes[i].set_ylabel("Loss")
+        axes[i].legend()
+
+    axes[-1].set_xlabel("Epoch")
+    plt.tight_layout()
+    plt.show()
+
+    for i, loss in enumerate(all_val_losses):
+        print(f"Fold {i + 1}: {loss:.4f}")
+    print(f"Mean CV validation loss {sum(all_val_losses) / len(all_val_losses):.4f}")
+    return sum(all_val_losses) / len(all_val_losses)
 
 
 def run_3d_model(typ: str):
@@ -54,16 +136,154 @@ def run_3d_model(typ: str):
 
     if typ == "GCN":
         gcn_model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
-        model, losses = train_gcn_model_batched(train_loader, gcn_model, lr=1e-3, epochs=300)
+        model, losses = train_model_batched(train_loader, gcn_model, lr=1e-3, epochs=300)
         plot_predictions(train_loader, gcn_model, "GCN")
     
     else:
         mpnn_model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
-        model, losses = train_gcn_model_batched(train_loader, mpnn_model, lr=1e-3, epochs=300)
+        model, losses = train_model_batched(train_loader, mpnn_model, lr=1e-3, epochs=300)
         plot_predictions(train_loader, mpnn_model, "MPNN")
 
-    plt.plot(losses[0], losses[1])
+    plt.plot(losses)
+    plt.title("Loss Curve")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
     plt.show()
 
 
-run_3d_model("")
+def run_2d_model(typ: str):
+    molecules_df = pd.read_csv("input.csv")
+    graphs_df = batch_from_csv(molecules_df, False)
+    graphs = graphs_df["graph"].to_list()
+
+    num_node_features = graphs[0].num_node_features
+    num_edge_features = graphs[0].num_edge_features
+
+    train_loader = DataLoader(graphs, batch_size=8, shuffle=True)
+
+    if typ == "GCN":
+        gcn_model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
+        model, losses = train_model_batched(train_loader, gcn_model, lr=1e-3, epochs=300)
+        plot_predictions(train_loader, gcn_model, "GCN")
+    
+    else:
+        mpnn_model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+        model, losses = train_model_batched(train_loader, mpnn_model, lr=1e-3, epochs=300)
+        plot_predictions(train_loader, mpnn_model, "MPNN")
+
+    plt.plot(losses)
+    plt.title("Loss Curve")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.show()
+
+
+def record_results(model, dataloader) -> tuple:
+    all_preds = []
+    all_targets = []
+
+    model.eval()
+    with torch.no_grad():
+        for batch in dataloader:
+            if "edge_attr" in model.forward.__code__.co_varnames:
+                preds = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch).squeeze()
+            else:
+                preds = model(batch.x, batch.edge_index, batch.batch).squeeze()
+            
+            targets = batch.y.squeeze()
+
+            # Handle possible shape mismatches
+            if preds.dim() == 0:
+                preds = preds.unsqueeze(0)
+            if targets.dim() == 0:
+                targets = targets.unsqueeze(0)
+
+            all_preds.append(preds.cpu())
+            all_targets.append(targets.cpu())
+
+    all_preds = torch.cat(all_preds, dim=0).numpy()
+    all_targets = torch.cat(all_targets, dim=0).numpy()
+    return (all_targets, all_preds)
+
+def compute_metrics(results_dict):
+    r2s = []
+    rmses = []
+
+    for run, (y_true, y_pred) in results_dict.items():
+        r2 = r2_score(y_true, y_pred)
+        rmse = root_mean_squared_error(y_true, y_pred)
+
+        r2s.append(r2)
+        rmses.append(rmse)
+
+    return {
+        "r2_mean": np.mean(r2s),
+        "r2_std": np.std(r2s),
+        "rmse_mean": np.mean(rmses),
+        "rmse_std": np.std(rmses)
+    }
+
+def run_3d_geom_ablation():
+    results = {
+        "no_geom": {},
+        "with_geom": {}
+    }
+    molecules_df = pd.read_csv("input.csv")
+    seeds = list(rd.randint(0, 1000, size=5))
+    for index, i in enumerate(seeds) :
+        set_seed(i)
+        graphs_df_2d = batch_from_csv(molecules_df, False)
+        graphs = graphs_df_2d["graph"].to_list()
+
+        num_node_features = graphs[0].num_node_features
+        num_edge_features = graphs[0].num_edge_features
+
+        train_loader = DataLoader(graphs, batch_size=4, shuffle=True)
+        mpnn_model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+        trained_model, losses = train_model_batched(train_loader, mpnn_model, lr=1e-3, epochs=300)
+        run_results = record_results(trained_model, train_loader)
+
+        results["no_geom"][f"Run {index + 1}"] = run_results
+        r2 = r2_score(run_results[0], run_results[1])
+        rmse = root_mean_squared_error(run_results[0], run_results[1])
+        print(f"For run {index} with no-geom, the performance metrics are \n")
+        print(f"""R^2 = {r2:.2} \n
+                RMSE = {rmse:.2}""")
+        
+
+        molecules_df = pd.read_csv("input.csv")
+        graphs_df_2d = batch_from_csv(molecules_df, True)
+        graphs = graphs_df_2d["graph"].to_list()
+
+        num_node_features = graphs[0].num_node_features
+        num_edge_features = graphs[0].num_edge_features
+
+        train_loader = DataLoader(graphs, batch_size=4, shuffle=True)
+        mpnn_model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+        trained_model, losses = train_model_batched(train_loader, mpnn_model, lr=1e-3, epochs=300)
+        run_results = record_results(trained_model, train_loader)
+
+        results["with_geom"][f"Run {index + 1}"] = run_results
+        r2 = r2_score(run_results[0], run_results[1])
+        rmse = root_mean_squared_error(run_results[0], run_results[1])
+        print(f"For run {index} on 3D-geom, the performance metrics are \n")
+        print(f"""R^2 = {r2:.2} \n
+                RMSE = {rmse:.2}""")
+
+    no_geom_stats = compute_metrics(results["no_geom"])
+    with_geom_stats = compute_metrics(results["with_geom"])
+
+
+    delta_r2 = with_geom_stats["r2_mean"] - no_geom_stats["r2_mean"]
+    delta_rmse = no_geom_stats["rmse_mean"] - with_geom_stats["rmse_mean"]
+
+    print(f"ΔR² = {delta_r2:.3f}")
+    print(f"ΔRMSE = {delta_rmse:.3f}")
+
+# run_2d_k_fold("", 5)
+# run_2d_model("GCN")
+
+# average = average_k_folds(5, 10, False)
+# print(f"Average CV error over 10 attempts: {average:.3f}")
+
+run_k_fold("MPNN", 5, False)

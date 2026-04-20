@@ -19,7 +19,10 @@ def plot_predictions(dataloader: DataLoader, model: nn.Module, model_type: str):
     """
     all_preds = [] 
     all_targets = []
+    loss_fn = MSELoss()
 
+    total_loss = 0
+    num_batches = 0
     # Put model in evaluation mode
     model.eval()
     with torch.no_grad():
@@ -39,6 +42,13 @@ def plot_predictions(dataloader: DataLoader, model: nn.Module, model_type: str):
 
             all_preds.append(preds.cpu())
             all_targets.append(targets.cpu())
+
+            loss = loss_fn(preds, targets)
+            total_loss += loss.item()
+            num_batches += 1
+
+        avg_loss = total_loss / num_batches
+        print(f"Loss during testing: {avg_loss:.4f}")
 
     # Convert to numpy arrays
     all_preds = torch.cat(all_preds, dim=0).numpy()
