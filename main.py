@@ -3,6 +3,9 @@ import numpy as np
 from numpy import random as rd
 import torch
 import random
+import csv
+import os
+from datetime import datetime
 from proc.smiles_to_graph import batch_from_csv
 from torch_geometric.loader import DataLoader # type: ignore
 from torch_geometric.data import Data
@@ -10,10 +13,21 @@ from matplotlib import pyplot as plt
 from sklearn.metrics import r2_score, root_mean_squared_error
 
 from model_analysis import plot_predictions
-from model_training import train_model_batched, train_model_batched_w_valid, GCNModel, MPNNModel
+from model_training import train_model_batched, train_model_batched_w_valid, train_model_batched_w_valid_early, GCNModel, MPNNModel
 
 
 seed_ = 786
+
+RESULTS_FILE = "hp_search_results.csv"
+CURVES_FILE = "learning_curves.csv"
+
+CSV_HEADER   = ["timestamp","lr","patience","struct_3d","seed","fold","val_loss_final","train_loss_final", "stopped_epoch"]
+CURVE_HEADER = ["timestamp","lr","epochs","struct_3d","seed","fold","epoch","train_loss","val_loss"]
+
+def ensure_csv(path, header):
+    if not os.path.exists(path):
+        with open(path, "w", newline="") as f:
+            csv.writer(f).writerow(header)
 
 def set_seed(seed: int) -> None:
     """
@@ -44,84 +58,137 @@ def create_k_folds(k: int, graphs: list[Data]) -> list[list[Data]]:
     # folds = [DataLoader(fold, batch_size=2, shuffle=True) for fold in folds]
     return folds
 
-def average_k_folds(k: int, times: int, struc) -> float:
+
+def average_k_folds(k: int, times: int, struc, learn: float, epochs: int) -> float:
     seeds = [int(random.uniform(0,1)*100) for i in range(times)]
     avgs = []
     for i in seeds:
         set_seed(i)
-        avg = run_k_fold("MPNN", 5, struc)
+        avg = run_k_fold("MPNN", k, struc, learn, epochs)
         avgs.append(avg)
     
     return np.array(avgs).mean()
 
-def run_k_fold(typ: str, k: int, struct_3d: bool) -> float:
+def run_k_fold(typ: str, k: int, struct_3d: bool, lr: float = 1e-3, patience: int = 50, seed: int|None = None) -> list[float]:
+    
+    ensure_csv(RESULTS_FILE, CSV_HEADER)
+    ensure_csv(CURVES_FILE, CURVE_HEADER)
+
+    ts = datetime.now().isoformat(timespec="seconds")
+
     molecules_df = pd.read_csv("input.csv")
-    if struct_3d == False:
-        graphs_df = batch_from_csv(molecules_df, False)
-    else:
-        graphs_df = batch_from_csv(molecules_df, True)
+    graphs_df = batch_from_csv(molecules_df, struct_3d)
     graphs = graphs_df["graph"].to_list()
     num_node_features = graphs[0].num_node_features
     num_edge_features = graphs[0].num_edge_features
 
     folds = create_k_folds(k, graphs)
+    fold_val_losses = []
     losses = {}
 
-    all_val_losses =[]
-    all_train_losses = []
-    for i in range(k):
-        val_graphs = folds[i]
-        train_graphs = [g for j in range(k) if j!= i for g in folds[j]]
+    with open(RESULTS_FILE, "a", newline="") as rf, \
+        open(CURVES_FILE, "a", newline="") as cf:
+        
+        rw = csv.writer(rf)
+        cw = csv.writer(cf)
+         
+    # all_val_losses =[]
+    # all_train_losses = []
+        rw.writerow(["", "", "", "", ""])
+        for i in range(k):
+            val_graphs = folds[i]
+            train_graphs = [g for j in range(k) if j!= i for g in folds[j]]
 
-        train_loader = DataLoader(train_graphs, batch_size=4, shuffle=True)
-        val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
-        if typ == "GCN":
-            model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
-        else:
-            model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
-        model, losses_train, losses_val = train_model_batched_w_valid(
-            train_loader,
-            val_loader,
-            model
-        )
-        losses[f"run_{i+1}"] = (losses_train, losses_val)
-        val_error = sum(losses_val[-10:]) / 10
-        all_val_losses.append(val_error)
+            train_loader = DataLoader(train_graphs, batch_size=4, shuffle=True)
+            val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
+
+            if typ == "GCN":
+                model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
+            else:
+                model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+            
+            model, losses_train, losses_val, stopped_ep = train_model_batched_w_valid_early(
+                train_loader,
+                val_loader,
+                model,
+                lr=lr,
+                patience=patience
+            )
+
+            val_final = float(np.mean(losses_val[-10:]))
+            train_final = float(np.mean(losses_train[-10:]))
+            fold_val_losses.append(val_final)
+
+            rw.writerow([ts, lr, patience, struct_3d, seed, i+1, val_final, train_final, stopped_ep])
+
+            for ep, (tl, vl) in enumerate(zip(losses_train, losses_val)):
+                cw.writerow([ts, lr, 1000, struct_3d, seed, i+1, ep+1, round(tl, 6), round(vl, 6)])
+
+    return fold_val_losses
+
+    #     losses[f"run_{i+1}"] = (losses_train, losses_val)
+    #     val_error = sum(losses_val[-10:]) / 10
+    #     all_val_losses.append(val_error)
     
-    val = np.array([losses[f"run_{i+1}"][1] for i in range(k)])
-    mean_val = val.mean(axis=0)
-    std_val = val.std(axis=0)
-    epochs = range(len(mean_val))
-    plt.figure(figsize=(8,5))
-    plt.plot(epochs, mean_val, label="Mean Validation Loss")
-    plt.fill_between(
-        epochs,
-        mean_val - std_val,
-        mean_val + std_val,
-        alpha=0.3
-    )
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("5-Fold Cross Validation: Validation Loss (Mean ± Std)")
-    plt.legend()
-    plt.show()
+    # val_losses = [losses[f"run_{i+1}"][1] for i in range(k)]
+    # train_losses = [losses[f"run_{i+1}"][0] for i in range(k)]
 
-    fig, axes = plt.subplots(k, 1, figsize=(8,12), sharex=True)
-    for i in range(k):
-        axes[i].plot(losses[f"run_{i+1}"][0], label="Train Loss")
-        axes[i].plot(losses[f"run_{i+1}"][1], label="Val Loss")
-        axes[i].set_title(f"Fold {i+1}")
-        axes[i].set_ylabel("Loss")
-        axes[i].legend()
+    # max_len = max(len(l) for l in val_losses)
+    # val_padded = [l + [l[-1]]*(max_len - len(l)) for l in val_losses]
+    # # train_padded = [l + [l[-1]]*(max_len - len(l)) for l in train_losses]
 
-    axes[-1].set_xlabel("Epoch")
-    plt.tight_layout()
-    plt.show()
+    # val = np.array(val_padded)
+    # mean_val = val.mean(axis=0)
+    # std_val = val.std(axis=0)
+    # num_epochs = range(len(mean_val))
+    # plt.figure(figsize=(8,5))
+    # plt.plot(epochs, mean_val, label="Mean Validation Loss")
+    # plt.fill_between(
+    #     num_epochs,
+    #     mean_val - std_val,
+    #     mean_val + std_val,
+    #     alpha=0.3
+    # )
+    # plt.xlabel("Epoch")
+    # plt.ylabel("Loss")
+    # plt.title("5-Fold Cross Validation: Validation Loss (Mean ± Std)")
+    # plt.legend()
+    # plt.show()
 
-    for i, loss in enumerate(all_val_losses):
-        print(f"Fold {i + 1}: {loss:.4f}")
-    print(f"Mean CV validation loss {sum(all_val_losses) / len(all_val_losses):.4f}")
-    return sum(all_val_losses) / len(all_val_losses)
+    # fig, axes = plt.subplots(k, 1, figsize=(8,12), sharex=False)
+    # for i in range(k):
+    #     axes[i].plot(losses[f"run_{i+1}"][0], label="Train Loss")
+    #     axes[i].plot(losses[f"run_{i+1}"][1], label="Val Loss")
+    #     axes[i].set_title(f"Fold {i+1}")
+    #     axes[i].set_ylabel("Loss")
+    #     axes[i].legend()
+
+    # axes[-1].set_xlabel("Epoch")
+    # plt.tight_layout()
+    # plt.show()
+
+    # for i, loss in enumerate(all_val_losses):
+    #     print(f"Fold {i + 1}: {loss:.4f}")
+    # print(f"Mean CV validation loss {sum(all_val_losses) / len(all_val_losses):.4f}")
+    # return sum(all_val_losses) / len(all_val_losses)
+
+def run_hp_search(k: int, times: int, struct_3d: bool, lr_values: list[float], patience_vals: list[int]):
+
+    seeds = [int(random.uniform(0, 1)*100) for _ in range(times)]
+
+    for lr in lr_values:
+        for pat in patience_vals:
+            all_fold_losses = []
+
+            for seed in seeds:
+                set_seed(seed)
+                fold_losses = run_k_fold("MPNN", k, struct_3d, lr, pat, seed)
+                all_fold_losses.extend(fold_losses)
+
+            arr = np.array(all_fold_losses)
+            print(f"lr={lr:.0e}  patience={pat}  "
+                  f"mean={arr.mean():.4f}  std={arr.std():.4f}  "
+                  f"n={len(arr)}")
 
 
 def run_3d_model(typ: str):
@@ -286,4 +353,7 @@ def run_3d_geom_ablation():
 # average = average_k_folds(5, 10, False)
 # print(f"Average CV error over 10 attempts: {average:.3f}")
 
-run_k_fold("MPNN", 5, False)
+lrs = [1e-3, 5e-3, 1e-2]
+patience_nums = [20, 50]
+run_hp_search(5, 10, False, lrs, patience_nums)
+

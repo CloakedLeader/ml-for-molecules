@@ -67,7 +67,7 @@ def train_model_batched_w_valid(
         epochs: int = 300
 ) -> tuple[nn.Module, list, list]:
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn = L1Loss()
     # loss_fn = MSELoss()
 
@@ -115,6 +115,87 @@ def train_model_batched_w_valid(
         val_losses.append(float(val_loss / val_batches))
     
     return model, train_losses, val_losses
+
+
+def train_model_batched_w_valid_early(
+        train_dataloader: DataLoader,
+        valid_dataloader: DataLoader,
+        model: nn.Module,
+        lr: float = 1e-3,
+        max_epochs: int = 1000,
+        patience: int = 50,
+        min_delta: float = 1e-4,
+        ema_alpha: float = 0.1
+) -> tuple[nn.Module, list, list, int]:
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn = L1Loss()
+    # loss_fn = MSELoss()
+
+    train_losses = []
+    val_losses = []
+
+    best_val_loss = float('inf')
+    ema_val_loss = None
+    stopped_ep = max_epochs
+    epochs_without_improvement = 0
+    
+    for epoch in range(max_epochs):
+        model.train()
+        total_loss = 0
+        num_batches = 0
+        for batch in train_dataloader:
+            optimizer.zero_grad()
+            if 'edge_attr' in model.forward.__code__.co_varnames:
+                out = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch).squeeze()
+            else:
+                out = model(batch.x, batch.edge_index, batch.batch).squeeze()
+            target = batch.y.squeeze()
+
+            assert out.shape == target.shape, f"{out.shape=} vs {target.shape=}"
+            loss = loss_fn(out, target)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            num_batches += 1
+
+        avg_loss = total_loss / num_batches
+        train_losses.append(float(total_loss / num_batches))
+
+        model.eval()
+        val_loss = 0
+        val_batches = 0
+        with torch.no_grad():
+            for batch in valid_dataloader:
+                if 'edge_attr' in model.forward.__code__.co_varnames:
+                    out = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch).squeeze()
+                else:
+                    out = model(batch.x, batch.edge_index, batch.batch).squeeze()
+                target = batch.y.squeeze()
+                loss = loss_fn(out, target)
+
+                val_loss += loss.item()
+                val_batches += 1
+
+        val_losses.append(float(val_loss / val_batches))
+
+        if ema_val_loss is None:
+            ema_val_loss = val_losses[-1]
+        else:
+            ema_val_loss = ema_alpha * val_losses[-1] + (1 - ema_alpha) * ema_val_loss
+        
+        if ema_val_loss < best_val_loss - min_delta:
+            best_val_loss = ema_val_loss
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= patience:
+            stopped_ep = epoch + 1
+            break
+    
+    return model, train_losses, val_losses, stopped_ep
+
 
 class GCNModel(torch.nn.Module):
     def __init__(self, in_channels, hidden_dim, out_dim=1, dropout_rate=0.2):
