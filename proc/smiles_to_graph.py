@@ -78,13 +78,57 @@ class MoleculeRepresentation:
         # Atomic Mass (1 dim) (scaled)
         features.append(atom.GetMass() * 0.01)
 
-        # Partial Charge (1 dim)
-        # charge = float(atom.GetProp("_GasteigerCharge"))
-        # features.append(charge)
+        return torch.tensor(features, dtype=torch.float)
 
-        # # Positions (3 dim)
-        # pos = conf.GetAtomPosition(atom.GetIdx())
-        # features += [pos.x, pos.y, pos.z]
+    def atom_features_3d(self, atom: Atom, conf: Conformer) -> Tensor:
+        """Creates a pytorch tensor that is the node-features for a specific atom.
+
+        Args:
+            atom (Atom): The atom(node) in the molecule to get the data for.
+
+        Returns:
+            Tensor: Has dimension 23 and contains  things like atomic number, degree, formal charge, chirality
+                and whether something is aromatic. These are returned as floats in the tensor.
+        """
+        rdPartialCharges.ComputeGasteigerCharges(self.molecule)
+        symbol = atom.GetSymbol()
+        features = []
+
+        # One-hot atomic symbol (10 dim)
+        features += self.one_hot(symbol, COMMON_ATOMS)
+        
+        # Atomic number (scaled) for uncommon atoms (1 dim)
+        features.append(atom.GetAtomicNum() / 100.0)
+
+        # Degree (1 dim)
+        features.append(atom.GetTotalDegree() / 4.0)
+
+        # Formal Charge (1 dim)
+        features.append(atom.GetFormalCharge() / 5.0)
+
+        # Hydridization (5 dim)
+        features += self.one_hot(atom.GetHybridization(), HYBRIDIZATION_TYPES)
+
+        # Aromaticity (1 dim)
+        features.append(int(atom.GetIsAromatic()))
+
+        # Number of Hydrogens (1 dim)
+        features.append(atom.GetTotalNumHs() / 4.0)
+
+        # In Ring (1 dim)
+        features.append(int(atom.IsInRing()))
+
+        # Chirality (2 dim)
+        chiral_tag = atom.GetChiralTag()
+        features.append(int(chiral_tag == Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CW))
+        features.append(int(chiral_tag == Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CCW))
+
+        # Atomic Mass (1 dim) (scaled)
+        features.append(atom.GetMass() * 0.01)
+
+        # Positions (3 dim)
+        pos = conf.GetAtomPosition(atom.GetIdx())
+        features += [pos.x, pos.y, pos.z]
 
         return torch.tensor(features, dtype=torch.float)
     @staticmethod
@@ -245,7 +289,7 @@ class MoleculeRepresentation:
             best_conf = self.find_best_conformer()
 
         # Node features
-        x = torch.stack([self.atom_features(atom) for atom in self.molecule.GetAtoms()])
+        x = torch.stack([self.atom_features_3d(atom, best_conf) for atom in self.molecule.GetAtoms()])
             
         # Edges
         edge_ind:list = []

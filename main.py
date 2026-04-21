@@ -59,17 +59,17 @@ def create_k_folds(k: int, graphs: list[Data]) -> list[list[Data]]:
     return folds
 
 
-def average_k_folds(k: int, times: int, struc: bool, learn: float, epochs: int) -> float:
+def average_k_folds(k: int, times: int, struc: bool, learn: float) -> float:
     seeds = [int(random.uniform(0,1)*1000) for i in range(times)]
     avgs = []
     for i in seeds:
         set_seed(i)
-        avg = run_k_fold("MPNN", k, struc, learn, epochs)
+        avg = run_k_fold("MPNN", k, struct_3d=struc, lr=learn)
         avgs.append(avg)
     
     return np.array(avgs).mean()
 
-def run_k_fold(typ: str, k: int, struct_3d: bool, lr: float = 1e-3, patience: int = 50, seed: int|None = None) -> list[float]:
+def run_k_fold(typ: str, k: int, struct_3d: bool, lr: float = 5e-3, patience: int = 35, seed: int|None = None) -> list[float]:
     
     ensure_csv(RESULTS_FILE, CSV_HEADER)
     ensure_csv(CURVES_FILE, CURVE_HEADER)
@@ -105,7 +105,7 @@ def run_k_fold(typ: str, k: int, struct_3d: bool, lr: float = 1e-3, patience: in
             if typ == "GCN":
                 model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
             else:
-                model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=64, num_layers=3, out_dim=1)
+                model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=16, num_layers=3, out_dim=1)
             
             model, losses_train, losses_val, stopped_ep = train_model_batched_w_valid_early(
                 train_loader,
@@ -476,6 +476,55 @@ def run_3d_k_fold(typ: str, k: int):
     return sum(all_val_losses) / len(all_val_losses)
 
 
+def average_3d_k_fold(times: int, k: int):
+    seeds = [int(random.uniform(0,1)*1000) for _ in range(times)]
+    avgs = []
+
+    molecules_df = pd.read_csv("input.csv")
+    graphs_df = batch_from_csv(molecules_df, True)
+    graphs = graphs_df["graph"].to_list()
+    num_node_features = graphs[0].num_node_features
+    num_edge_features = graphs[0].num_edge_features
+
+    all_val_scores = []
+    all_train_scores = []
+
+    fold_val_losses = []
+    losses = {}
+    for seed in seeds:
+        set_seed(seed)
+        folds = create_k_folds(k, graphs)
+
+        for i in range(k):
+            val_graphs = folds[i]
+            train_graphs = [g for j in range(k) if j!= i for g in folds[j]]
+
+            train_loader = DataLoader(train_graphs, batch_size=4, shuffle=True)
+            val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
+
+            model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
+            
+            model, losses_train, losses_val, stopped_ep = train_model_batched_w_valid_early(
+                train_loader,
+                val_loader,
+                model,
+                lr=5e-3,
+                patience=35
+            )
+
+            val_final = float(np.mean(losses_val[-10:]))
+            train_final = float(np.mean(losses_train[-10:]))
+            
+            all_val_scores.append(val_final)
+            all_train_scores.append(train_final)
+
+    val_mean = float(np.mean(all_val_scores))
+    val_std = float(np.std(all_val_scores))
+
+    print(f"Mean Validation MAE: {val_mean}",
+          f"Validation MAE Standard Deviation: {val_std}")
+    
+
 # run_2d_k_fold("", 5)
 # run_2d_model("GCN")
 
@@ -485,5 +534,3 @@ def run_3d_k_fold(typ: str, k: int):
 # lrs = [1e-3, 5e-3, 1e-2]
 # patience_nums = [20, 50]
 # run_hp_search(5, 10, False, lrs, patience_nums)
-
-run_3d_k_fold("MPNN", 5)
