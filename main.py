@@ -191,6 +191,31 @@ def run_hp_search(k: int, times: int, struct_3d: bool, lr_values: list[float], p
                   f"n={len(arr)}")
 
 
+def train_test_split():
+    molecules_df = pd.read_csv("input.csv")
+    graphs_df = batch_from_csv(molecules_df, True)
+    graphs = graphs_df["graph"].to_list()
+
+    num_node_features = graphs[0].num_node_features
+    num_edge_features = graphs[0].num_edge_features
+    test_df = graphs_df.sample(frac=0.2)
+    test_list = test_df["graph"].tolist()
+    train_set = graphs_df.drop(test_df.index)
+    train_list = train_set["graph"].tolist()
+    train_loader = DataLoader(train_list, batch_size=4, shuffle=True)
+    mpnn_model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=16, num_layers=3, out_dim=1)
+    model, losses = train_model_batched(train_loader, mpnn_model, lr=5e-3, epochs=80)
+    test_loader = DataLoader(test_list, batch_size=2, shuffle=False)
+    plot_predictions(test_loader, mpnn_model, "MPNN")
+
+    plt.plot(losses)
+    plt.title("Loss Curve")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.show()
+
+# train_test_split()
+
 def run_3d_model(typ: str):
     molecules_df = pd.read_csv("input.csv")
     graphs_df = batch_from_csv(molecules_df, True)
@@ -356,8 +381,8 @@ def create_poster_plot():
     num_edge_features = graphs[0].num_edge_features
 
     folds = create_k_folds(5, graphs)
-    targs = []
-    preds = []
+    k_targs = []
+    k_preds = []
     for i in range(5):
         val_graphs = folds[i]
         train_graphs = [g for j in range(5) if j!= i for g in folds[j]]
@@ -376,26 +401,37 @@ def create_poster_plot():
         )
 
         fold_targs, fold_preds = record_results(model, val_loader)
-        targs.extend(fold_targs)
-        preds.extend(fold_preds)
+        k_targs.extend(fold_targs)
+        k_preds.extend(fold_preds)
    
-    targs = np.array(targs)
-    preds = np.array(preds)
+    plt.figure(figsize=(10, 8))
 
-    m, b = np.polyfit(targs, preds, 1)
-    x = np.linspace(min(targs), max(targs), 100)
-    plt.plot(x, m*x + b, label=f"Fit y = {m:.2f}x + {b:.2f}")
+    k_targs = np.array(k_targs)
+    k_preds = np.array(k_preds)
+
+    l_df = pd.read_csv("loo_results_mpnn.csv")
+    l_targs = l_df["target"].to_numpy()
+    l_preds = l_df["prediction"].to_numpy()
+
+    m_l, b_l = np.polyfit(l_targs, l_preds, 1)
+    x_l = np.linspace(min(l_targs), max(l_targs), 100)
+    plt.plot(x_l, m_l*x_l + b_l, label=f"Fit y = {m_l:.2f}x + {b_l:.2f} (leave-one-out)" )
+    m, b = np.polyfit(k_targs, k_preds, 1)
+    x = np.linspace(min(k_targs), max(k_targs), 100)
+    plt.plot(x, m*x + b, label=f"Fit y = {m:.2f}x + {b:.2f} (5-fold cross-validation)")
     
-    plt.plot([min(targs), max(targs)],
-             [min(targs), max(targs)],
-             "r--", label="Ideal: y = x")
-    plt.xlabel("True Value")
-    plt.ylabel("Predicted Value")
-    plt.legend()
+    plt.plot([min(k_targs), max(k_targs)],
+             [min(k_targs), max(k_targs)],
+             "r--",linewidth=3, label="Ideal: y = x")
+    plt.xlabel("True Value", fontsize=22)
+    plt.ylabel("Predicted Value", fontsize=22)
+    plt.legend(fontsize=18)
+    plt.tight_layout()
+    plt.savefig("poster_pic.png", dpi=600)
     plt.show()
 
 
-def run_3d_k_fold(typ: str, k: int):
+def run_3d_k_fold(typ: str, k: int, coords, dist):
 
     molecules_df = pd.read_csv("input.csv")
     graphs_df = batch_from_csv(molecules_df, True)
@@ -417,7 +453,7 @@ def run_3d_k_fold(typ: str, k: int):
         val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
 
         if typ == "GCN":
-            model = GCNModel(in_channels=num_node_features, hidden_dim=64, out_dim=1)
+            model = GCNModel(in_channels=num_node_features, hidden_dim=32, out_dim=1)
         else:
             model = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=16, num_layers=3, out_dim=1)
         
@@ -476,6 +512,169 @@ def run_3d_k_fold(typ: str, k: int):
     return sum(all_val_losses) / len(all_val_losses)
 
 
+def ablation_test():
+    seeds = [int(random.uniform(0,1)*1000) for i in range(5)]
+
+    # 2D dataset (MPNN + GCN)
+    molecules_df = pd.read_csv("input.csv")
+    graphs_df = batch_from_csv(molecules_df, False)
+    graphs = graphs_df["graph"].to_list()
+    num_node_features = graphs[0].num_node_features
+    num_edge_features = graphs[0].num_edge_features
+    gcn_2d_errors = []
+    mpnn_2d_errors = []
+    mpnn_dist_errors = []
+    mpnn_coord_errors = []
+    mpnn_3d_errors = []
+    for seed in seeds:
+        set_seed(seed)
+        folds = create_k_folds(5, graphs)
+        for i in range(5):
+            val_graphs = folds[i]
+            train_graphs = [g for j in range(5) if j!= i for g in folds[j]]
+
+            train_loader = DataLoader(train_graphs, batch_size=4, shuffle=True)
+            val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
+
+            model_gcn = GCNModel(in_channels=num_node_features, hidden_dim=32, out_dim=1)
+        
+            model_gcn, losses_train, losses_val, stopped_ep = train_model_batched_w_valid_early(
+                train_loader,
+                val_loader,
+                model_gcn,
+                lr=5e-3,
+                patience=35
+            )
+
+            val_error = sum(losses_val[-10:]) / 10
+            gcn_2d_errors.append(val_error)
+
+    for seed in seeds:
+        set_seed(seed)
+        folds = create_k_folds(5, graphs)
+        for i in range(5):
+            val_graphs = folds[i]
+            train_graphs = [g for j in range(5) if j!= i for g in folds[j]]
+
+            train_loader = DataLoader(train_graphs, batch_size=4, shuffle=True)
+            val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
+
+            model_mpnn = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=15, num_layers=3, out_dim=1)
+        
+            model_mpnn, losses_train, losses_val, stopped_ep = train_model_batched_w_valid_early(
+                train_loader,
+                val_loader,
+                model_mpnn,
+                lr=5e-3,
+                patience=35
+            )
+
+            val_error = sum(losses_val[-10:]) / 10
+            mpnn_2d_errors.append(val_error)
+
+    # Distance Only
+    graphs_df = batch_from_csv(molecules_df, True, include_dist=True, include_coord=False)
+    graphs = graphs_df["graph"].to_list()
+    num_node_features = graphs[0].num_node_features
+    num_edge_features = graphs[0].num_edge_features
+
+    for seed in seeds:
+        set_seed(seed)
+        folds = create_k_folds(5, graphs)
+        for i in range(5):
+            val_graphs = folds[i]
+            train_graphs = [g for j in range(5) if j!= i for g in folds[j]]
+
+            train_loader = DataLoader(train_graphs, batch_size=4, shuffle=True)
+            val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
+
+            model_mpnn = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=15, num_layers=3, out_dim=1)
+        
+            model_mpnn, losses_train, losses_val, stopped_ep = train_model_batched_w_valid_early(
+                train_loader,
+                val_loader,
+                model_mpnn,
+                lr=5e-3,
+                patience=35
+            )
+
+            val_error = sum(losses_val[-10:]) / 10
+            mpnn_dist_errors.append(val_error)
+
+
+    # Coords Only
+    graphs_df = batch_from_csv(molecules_df, True, include_dist=False, include_coord=True)
+    graphs = graphs_df["graph"].to_list()
+    num_node_features = graphs[0].num_node_features
+    num_edge_features = graphs[0].num_edge_features
+
+    for seed in seeds:
+        set_seed(seed)
+        folds = create_k_folds(5, graphs)
+        for i in range(5):
+            val_graphs = folds[i]
+            train_graphs = [g for j in range(5) if j!= i for g in folds[j]]
+
+            train_loader = DataLoader(train_graphs, batch_size=4, shuffle=True)
+            val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
+
+            model_mpnn = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=15, num_layers=3, out_dim=1)
+        
+            model_mpnn, losses_train, losses_val, stopped_ep = train_model_batched_w_valid_early(
+                train_loader,
+                val_loader,
+                model_mpnn,
+                lr=5e-3,
+                patience=35
+            )
+
+            val_error = sum(losses_val[-10:]) / 10
+            mpnn_coord_errors.append(val_error)
+
+    
+    # Full 3D Model
+    graphs_df = batch_from_csv(molecules_df, True, include_dist=True, include_coord=True)
+    graphs = graphs_df["graph"].to_list()
+    num_node_features = graphs[0].num_node_features
+    num_edge_features = graphs[0].num_edge_features
+
+    for seed in seeds:
+        set_seed(seed)
+        folds = create_k_folds(5, graphs)
+        for i in range(5):
+            val_graphs = folds[i]
+            train_graphs = [g for j in range(5) if j!= i for g in folds[j]]
+
+            train_loader = DataLoader(train_graphs, batch_size=4, shuffle=True)
+            val_loader = DataLoader(val_graphs, batch_size=2, shuffle=False)
+
+            model_mpnn = MPNNModel(in_channels=num_node_features, edge_dim=num_edge_features, hidden_dim=15, num_layers=3, out_dim=1)
+        
+            model_mpnn, losses_train, losses_val, stopped_ep = train_model_batched_w_valid_early(
+                train_loader,
+                val_loader,
+                model_mpnn,
+                lr=5e-3,
+                patience=35
+            )
+
+            val_error = sum(losses_val[-10:]) / 10
+            mpnn_3d_errors.append(val_error)
+
+
+    results = {
+        "gcn_2d": gcn_2d_errors,
+        "mpnn_2d": mpnn_2d_errors,
+        "mpnn_dist": mpnn_dist_errors,
+        "mpnn_coord": mpnn_coord_errors,
+        "mpnn_3d": mpnn_3d_errors
+    }
+
+    df = pd. DataFrame(dict([(k, pd.Series(v)) for k, v in results.items()]))
+    df.to_csv("ablation_results.csv", index = False)
+    
+
+
 # run_2d_k_fold("", 5)
 # run_2d_model("GCN")
 
@@ -486,4 +685,4 @@ def run_3d_k_fold(typ: str, k: int):
 # patience_nums = [20, 50]
 # run_hp_search(5, 10, False, lrs, patience_nums)
 
-run_3d_k_fold("MPNN", 5)
+
