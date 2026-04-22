@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import MSELoss, Linear, ReLU, Dropout, Sequential, L1Loss
 from torch_geometric.loader import DataLoader # type: ignore
-from torch_geometric.nn import GCNConv, global_mean_pool, MessagePassing # type: ignore
+from torch_geometric.nn import GCNConv, global_mean_pool, MessagePassing, global_max_pool # type: ignore
 from torch_geometric.utils import add_self_loops, degree # type: ignore
 import torch.nn.functional as F
 
@@ -198,29 +198,42 @@ def train_model_batched_w_valid_early(
 
 
 class GCNModel(torch.nn.Module):
-    def __init__(self, in_channels, hidden_dim, out_dim=1, dropout_rate=0.2):
+    def __init__(self, in_channels, hidden_dim, out_dim=1, dropout_rate=0.05):
         super().__init__()
 
         # GCN layers
         self.conv1 = GCNConv(in_channels, hidden_dim)
-
+        self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.conv3 = GCNConv(hidden_dim, hidden_dim) 
 
         # Feedforward MLP for regression
         self.ffnn = Sequential(
-            Linear(hidden_dim, hidden_dim),
+            Linear(hidden_dim * 2, hidden_dim),
             ReLU(),
             Dropout(dropout_rate),
-            Linear(hidden_dim, out_dim)
+            Linear(hidden_dim, hidden_dim // 2),
+            ReLU(),
+            Dropout(dropout_rate),
+            Linear(hidden_dim // 2, out_dim)
         )
 
     def forward(self, x, edge_index, batch):
         x = self.conv1(x, edge_index)
         x = torch.relu(x)
 
+        x_res = x 
+        x = self.conv2(x, edge_index)
+        x = torch.relu(x) + x_res
+
+        x_res = x
+        x = self.conv3(x, edge_index)
+        x = torch.relu(x) + x_res
+
         # batch = torch.zeros(x.size(0), dtype=torch.long)
-        x = global_mean_pool(x, batch)
-        out = self.ffnn(x)
-        return out
+        x_mean = global_mean_pool(x, batch)
+        x_max = global_max_pool(x, batch)
+        x = torch.cat([x_mean, x_max], dim=1)
+        return self.ffnn(x)
 
 
 class MPNNLayer(MessagePassing):
@@ -235,9 +248,11 @@ class MPNNLayer(MessagePassing):
             nn.Linear(in_channels + hidden_dim, hidden_dim),
             nn.ReLU()
         )
+        self.norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, x, edge_index, edge_attr):
-        return self.propagate(edge_index, x=x, edge_attr=edge_attr)
+        out = self.propagate(edge_index, x=x, edge_attr=edge_attr)
+        return self.norm(out)
     
     def message(self, x_j, edge_attr):  # type: ignore
         return self.message_mlp(torch.cat([x_j, edge_attr], dim=-1))
@@ -248,7 +263,7 @@ class MPNNLayer(MessagePassing):
 
 class MPNNModel(nn.Module):
     def __init__(self, in_channels, edge_dim, hidden_dim, num_layers=3, out_dim=1, dropout_rate=0.2):
-        super().__init__()
+        super().__init__(aggr="mean")
 
         self.node_proj = nn.Linear(in_channels, hidden_dim)
 
@@ -264,7 +279,7 @@ class MPNNModel(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
 
         self.ffnn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim *2, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
             nn.Linear(hidden_dim, out_dim),
@@ -282,6 +297,8 @@ class MPNNModel(nn.Module):
             x = x + x_res  # simple residual connection
 
         # Graph-level pooling
-        x = global_mean_pool(x, batch)
+        x_mean = global_mean_pool(x, batch)
+        x_max = global_max_pool(x, batch)
+        x = torch.cat([x_mean, x_max], dim=1)
 
         return self.ffnn(x)

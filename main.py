@@ -405,6 +405,9 @@ def create_poster_plot():
         k_preds.extend(fold_preds)
    
     plt.figure(figsize=(10, 8))
+    fig, ax = plt.subplots()
+    fig.patch.set_facecolor("darkgrey")
+    ax.set_facecolor("lightgrey")
 
     k_targs = np.array(k_targs)
     k_preds = np.array(k_preds)
@@ -425,7 +428,7 @@ def create_poster_plot():
              "r--",linewidth=3, label="Ideal: y = x")
     plt.xlabel("True Value", fontsize=22)
     plt.ylabel("Predicted Value", fontsize=22)
-    plt.legend(fontsize=18)
+    plt.legend(fontsize=12)
     plt.tight_layout()
     plt.savefig("poster_pic.png", dpi=600)
     plt.show()
@@ -673,16 +676,4 @@ def ablation_test():
     df = pd. DataFrame(dict([(k, pd.Series(v)) for k, v in results.items()]))
     df.to_csv("ablation_results.csv", index = False)
     
-
-
-# run_2d_k_fold("", 5)
-# run_2d_model("GCN")
-
-# average = average_k_folds(5, 10, False)
-# print(f"Average CV error over 10 attempts: {average:.3f}")
-
-# lrs = [1e-3, 5e-3, 1e-2]
-# patience_nums = [20, 50]
-# run_hp_search(5, 10, False, lrs, patience_nums)
-
-
+create_poster_plot()
